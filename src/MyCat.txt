@@ -1,0 +1,154 @@
+MyCat:
+    1.是什么:
+        数据库中间件
+            前身是阿里的cobar
+    2.干什么:
+        1)读写分离
+        2)数据分片
+            垂直拆分
+            水平拆分
+            垂直+水平拆分
+        3)多数据源整合
+    3.原理:
+        拦截:
+            Mycat 的原理中最重要的一个动词是“拦截”，它拦截了用户发送过来的 SQL 语句，
+            首先对 SQL 语句做了一些特定的分析：如分片分析、路由分析、读写分离分析、缓存分析等，
+            然后将此 SQL 发往后端的真实数据库，并将返回的结果做适当的处理，最终再返回给用户
+        这种方式把数据库的分布式从代码中解耦出来，程序员察觉不出来后台使用mycat还是mysql。
+    4.安装启动:
+        1)解压缩文件拷贝到linux下 /usr/local/
+        2)三个文件:
+            schema.xml
+                定义逻辑库，表、分片节点等内容
+            rule.xml
+                定义分片规则
+            server.xml
+                定义用户以及系统相关变量，如端口等.
+        3)启动前先修改schema.xml
+            <schema>
+            <dataNode>
+            <dataHost>
+        4)再修改server.xml
+        5)启动程序:
+            控制台启动 ：去mycat/bin 目录下 mycat console
+            后台启动 ：去mycat/bin 目录下 mycat start
+        6)启动时可能出现报错:
+            域名解析失败
+                ①用vim 修改 /etc/hosts 文件
+                    在 127.0.0.1 后面增加你的机器名
+                ②修改后重新启动网络服务
+        7)登录:
+            后台管理窗口
+                mysql -uroot -p654321 -P9066 -h192.168.67.131
+            命令
+                show @@help
+            数据窗口
+                mysql -uroot -p654321 -P8066 -h192.168.67.131
+    5.主从复制:
+        1)schema.xml
+            balance:
+                负载均衡类型，目前的取值有 3 种：
+                    ①balance="0":
+                        不开启读写分离机制，所有读操作都发送到当前可用的 writeHost 上。
+                    ②balance="1":
+                        全部的 readHost 与 stand by writeHost 参与 select 语句的负载均衡，
+                        简单的说，当双主双从模式(M1->S1，M2->S2，并且 M1 与 M2 互为主备)，正常情况下，M2,S1,S2 都参与 select 语句的负载均衡。
+                    ③balance="2":
+                        所有读操作都随机的在 writeHost、readhost 上分发。
+                    ④balance="3":
+                        所有读请求随机的分发到 wiriterHost 对应的 readhost 执行，writerHost 不负担读压力
+        2)读写分离:
+            创建表:
+                create table t_replica
+                (    id  int auto_increment ,
+                     name varchar(200)
+                );
+            分别在两个库下插入：
+                insert into t_replica(name) values (@@hostname)
+            然后在mycat下执行select * from t_replica
+    6.分库:
+        1)创建表:
+            #客户表  rows:20万
+            CREATE TABLE customer(
+                id INT AUTO_INCREMENT,
+                NAME VARCHAR(200),
+                PRIMARY KEY(id)
+            );
+
+            #订单表   rows:600万
+            CREATE TABLE orders(
+                id INT AUTO_INCREMENT,
+                order_type INT,
+                customer_id INT,
+                amount DECIMAL(10,2),
+                PRIMARY KEY(id)
+            );
+
+            SELECT o.*,od.detail,d.order_type
+            FROM orders  o
+            INNER JOIN orders_detail  od
+            ON o.id =od.order_id
+            INNER JOIN dict_order_type d
+            ON o.order_type=d.id ;
+
+            #订单详细表     rows:600万
+            CREATE TABLE orders_detail(
+                id INT AUTO_INCREMENT,
+                detail VARCHAR(2000),
+                order_id INT,
+                PRIMARY KEY(id)
+            );
+
+            #订单状态字典表   rows:20
+            CREATE TABLE dict_order_type(
+                id INT AUTO_INCREMENT,
+                order_type VARCHAR(200),
+                PRIMARY KEY(id)
+            );
+    7.水平分表:
+        1)schema.xml
+        2)rule.xml
+        3)全局序列:
+              ①三种方式:
+                    本地文件(不推荐)
+                    数据库方式(高并发性能低)
+                    时间戳方式(比较长)(18)
+                    自主生成:
+                        根据业务逻辑组合,可以利用 redis的单线程原子性 incr来生成序列.
+              ②时间戳方式
+                    插入语句:
+                        insert into `orders`(id,amount,customer_id,order_type)
+                        values(next value for MYCATSEQ_GLOBAL,1000,103,10);
+                    server.xml
+                         <property name="sequnceHandlerType">2</property>
+                            0-本地文件方式
+                            1-数据库方式
+                            2-时间戳方式
+        4)跨库join
+            ①全局表
+                设定为全局的表，会直接复制给每个数据库一份，所有写操作也会同步给多个库。
+                所以全局表一般不能是大数据表或者更新频繁的表
+                一般是字典表或者系统表为宜。
+                schema.xml
+            ②ER表
+                为了相关联的表的行尽量分在一个库下
+                schema.xml
+            ③federated引擎
+                开启引擎:
+                    修改my.cnf
+                    在[mysqld]下增加一行
+                    federated
+                    然后重启mysql
+                建表:
+                     CREATE TABLE customer(
+                        id INT AUTO_INCREMENT,
+                        NAME VARCHAR(200),
+                        PRIMARY KEY(id)
+                    )ENGINE=FEDERATED  CONNECTION="mysql://root:123123@192.168.67.141:3306/myorder/customer"
+                使用时的注意事项:
+                    本地的表结构必须与远程的完全一样。
+                    远程数据库目前仅限MySQL
+                    不支持事务
+                    不支持表结构修改 ddl
+                最大的问题:
+                    性能
